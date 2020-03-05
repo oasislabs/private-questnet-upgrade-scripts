@@ -3,14 +3,53 @@ Hacky upgrade script for 2020-03-05... we should instead use the tools in
 the-quest-entities on the next upgrade
 """
 import json
-import click
 import tarfile
 import os
+import sys
+import subprocess
+import shutil
+import io
+import time
+import slack
+import click
+import requests
 from collections import OrderedDict
 from datetime import datetime
 
 DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
 FUNDING_AMOUNT = 100_000_000_000_000
+OASIS_NODE_URL = 'https://github.com/oasislabs/oasis-core/releases/download/v{version}/oasis-node_{version}_linux_amd64.tar.gz'
+OASIS_NODE_DOWNLOAD_PATH = '/tmp'
+
+
+class OasisNodeBinary(object):
+    """Abstracts calling a specific version of the oasis-node binary"""
+    @classmethod
+    def version(cls, version):
+        download_url = OASIS_NODE_URL.format(version=version)
+        oasis_node_tarball_path = os.path.join(
+            OASIS_NODE_DOWNLOAD_PATH, 'oasis-node-%s.tar.gz' % version)
+        oasis_node_path = os.path.join(
+            OASIS_NODE_DOWNLOAD_PATH, 'oasis-node-%s' % version)
+        with requests.get(download_url, stream=True) as r:
+            with open(oasis_node_tarball_path, 'wb') as f:
+                shutil.copyfileobj(r.raw, f)
+        subprocess.call(['tar', 'xvf', oasis_node_tarball_path],
+                        cwd=OASIS_NODE_DOWNLOAD_PATH)
+        shutil.move(
+            os.path.join(OASIS_NODE_DOWNLOAD_PATH, 'oasis-node'),
+            oasis_node_path
+        )
+        os.chmod(oasis_node_path, 0o755)
+        return cls(oasis_node_path)
+
+    def __init__(self, oasis_node_path):
+        self._path = oasis_node_path
+
+    def call(self, *args):
+        command = [self._path]
+        command.extend(args)
+        return subprocess.check_call(command)
 
 
 class Entity(object):
@@ -42,12 +81,10 @@ def load_entities_dir(entity_dir_path):
 
 
 @click.command()
-@click.option('--genesis-dump', default="", required=False,
-              type=click.Path(exists=True, resolve_path=True))
+@click.option('--genesis-dump', default="", required=False)
 @click.option('--genesis-dump-height', default=0, required=False,
               type=click.INT)
-@click.option('--genesis-save-path', default="", required=False,
-              type=click.Path(resolve_path=True))
+@click.option('--genesis-save-path', default="", required=False)
 @click.option('--chain-id-prefix', default='questnet')
 @click.option('--genesis-time',
               default=datetime.now().strftime(DATETIME_FORMAT),
@@ -58,12 +95,35 @@ def load_entities_dir(entity_dir_path):
 @click.option('--dry-run-entities-path', required=False,
               type=click.Path(resolve_path=True))
 @click.option('--dry-run/--no-dry-run', default=False)
+@click.option('--current-version', default='20.3')
+@click.option('--client-address',
+              default=os.environ.get('OASIS_CLIENT_SERVICE_PORT', ''))
+@click.option('--slack-api-token',
+              default=os.environ.get('SLACK_API_TOKEN', ''))
+@click.option('--slack-channel', default='#mainnet-dryrun')
 def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
             chain_id_prefix, genesis_time, new_halt_epoch,
-            dry_run_entities_path, dry_run):
+            dry_run_entities_path, dry_run, current_version,
+            client_address, slack_api_token, slack_channel):
     if genesis_dump == "":
-        # Somehow download the genesis dump from the running node
-        raise Exception('Not yet implemented')
+        if not client_address:
+            raise Exception('no configured address to call a questnet node')
+
+        # Load the current questnet version that is running
+        oasis_node_current = OasisNodeBinary.version(current_version)
+
+        genesis_dump = '/tmp/genesis.json'
+
+        # Download the dump
+        oasis_node_current.call(
+            'genesis', 'dump',
+            '--height', '%d' % genesis_dump_height,
+            '-a', client_address,
+            '--genesis.file', genesis_dump
+        )
+    else:
+        genesis_dump = os.path.abspath(os.path.expanduser(genesis_dump))
+
     genesis_dict = json.load(
         open(genesis_dump), object_pairs_hook=OrderedDict)
 
@@ -95,6 +155,9 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
     chain_id_date_and_timestamp = genesis_time.strftime('%Y-%m-%d-%s')
     genesis_dict['chain_id'] = '%s-%s' % (chain_id_prefix,
                                           chain_id_date_and_timestamp)
+
+    genesis_dict['genesis_time'] = genesis_time.strftime(
+        '%Y-%m-%dT%H:%M:%S.000000000Z')
 
     # Generate dry run genesis document
     if dry_run:
@@ -161,8 +224,37 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
 
     genesis_dict['halt_epoch'] = new_halt_epoch
 
+    genesis_json_str = json.dumps(genesis_dict, indent=2)
+
     if genesis_save_path:
-        json.dump(genesis_dict, open(genesis_save_path, 'w'), indent=2)
+        genesis_save_path = os.path.abspath(
+            os.path.expanduser(genesis_save_path))
+        with open(genesis_save_path, 'w') as genesis_save:
+            genesis_save.write(genesis_json_str)
+
+    if slack_api_token:
+        print("slacking the team")
+        # Upload file to slack and notify Peter G to not wake Reuven because
+        # it's kinda funny
+        client = slack.WebClient(token=slack_api_token)
+
+        file_content = io.BytesIO()
+        file_content.write(genesis_json_str.encode('utf-8'))
+        file_content.seek(0)
+
+        print("uploading files")
+
+        client.files_upload(
+            channels=slack_channel,
+            filename='genesis.json',
+            file=file_content,
+            title='Automated Genesis Patch'
+        )
+
+        client.chat_postMessage(
+            channel=slack_channel,
+            text='If the genesis looks fine feel free to publish the genesis early',
+        )
 
 
 if __name__ == "__main__":
