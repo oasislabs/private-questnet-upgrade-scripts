@@ -95,7 +95,7 @@ def load_entities_dir(entity_dir_path):
 
 @click.command()
 @click.option('--genesis-dump', default="", required=False)
-@click.option('--genesis-dump-height', default=0, required=False,
+@click.option('--genesis-dump-height', default=591600, required=False,
               type=click.INT)
 @click.option('--genesis-save-path', default="", required=False)
 @click.option('--chain-id-prefix', default='questnet')
@@ -103,7 +103,7 @@ def load_entities_dir(entity_dir_path):
               default=datetime.now().strftime(DATETIME_FORMAT),
               help='Date time of deployment in UTC as iso8601',
               type=click.DateTime(formats=[DATETIME_FORMAT]))
-@click.option('--new-halt-epoch', default=6525, required=True,
+@click.option('--new-halt-epoch', default=11000, required=True,
               type=click.INT)
 @click.option('--dry-run-entities-path', required=False,
               type=click.Path(resolve_path=True))
@@ -141,9 +141,15 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
     genesis_dict = json.load(
         open(genesis_dump), object_pairs_hook=OrderedDict)
 
-    # Remove registry entities
-    for entity_id in ENTITY_IDS_TO_REMOVE:
-        del genesis_dict['registry']['entities'][entity_id]
+    # Remove registry entities just filter everyone out who matches
+    updated_entities = []
+    existing_entities = genesis_dict['registry']['entities']
+    for existing_entity in existing_entities:
+        if existing_entity['signature']['public_key'] in ENTITY_IDS_TO_REMOVE:
+            print("removing %s" % existing_entity['signature']['public_key'])
+            continue
+        updated_entities.append(existing_entity)
+    genesis_dict['registry']['entities'] = updated_entities
 
     # Remove unnecessary staking params
     del genesis_dict['staking']['params']['fee_split_vote']
@@ -224,6 +230,8 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
             }
 
         genesis_dict['staking']['total_supply'] = '%d' % new_total_supply
+        genesis_dict['scheduler']['params']['min_validators'] = len(
+            added_entity_ids)
 
     genesis_dict['halt_epoch'] = new_halt_epoch
 
