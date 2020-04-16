@@ -147,7 +147,7 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
     for existing_entity in existing_entities:
         entity_id = existing_entity['signature']['public_key']
         escrow_amount = get_entity_escrow_amount(genesis_dict, entity_id)
-        if escrow_amount < 100_000_000_000:
+        if escrow_amount < int(genesis_dict['staking']['params']['thresholds']['0']):
             print("removing %s" % entity_id)
             continue
         updated_entities.append(existing_entity)
