@@ -145,8 +145,10 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
     updated_entities = []
     existing_entities = genesis_dict['registry']['entities']
     for existing_entity in existing_entities:
-        if existing_entity['signature']['public_key'] in ENTITY_IDS_TO_REMOVE:
-            print("removing %s" % existing_entity['signature']['public_key'])
+        entity_id = existing_entity['signature']['public_key']
+        escrow_amount = get_entity_escrow_amount(genesis_dict, entity_id)
+        if escrow_amount < 100_000_000_000:
+            print("removing %s" % entity_id)
             continue
         updated_entities.append(existing_entity)
     genesis_dict['registry']['entities'] = updated_entities
@@ -266,6 +268,17 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
             channel=slack_channel,
             text='If the genesis looks fine feel free to publish the genesis early',
         )
+
+
+def get_entity_escrow_amount(genesis_dict, entity_id):
+    try:
+        escrow_amount = int(
+            genesis_dict['staking']['ledger'][entity_id]['escrow']['active']['balance'])
+        return escrow_amount
+    except ValueError:
+        return 0
+    except KeyError:
+        return 0
 
 
 if __name__ == "__main__":
