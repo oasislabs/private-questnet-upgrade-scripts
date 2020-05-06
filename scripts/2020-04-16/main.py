@@ -13,8 +13,10 @@ import time
 import slack
 import click
 import requests
+import base64
 from collections import OrderedDict
 from datetime import datetime
+import cbor
 
 DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
 FUNDING_AMOUNT = 100_000_000_000_000
@@ -144,14 +146,36 @@ def upgrade(genesis_dump, genesis_dump_height, genesis_save_path,
     # Remove registry entities just filter everyone out who matches
     updated_entities = []
     existing_entities = genesis_dict['registry']['entities']
+    nodes_to_delete = []
     for existing_entity in existing_entities:
         entity_id = existing_entity['signature']['public_key']
         escrow_amount = get_entity_escrow_amount(genesis_dict, entity_id)
         if escrow_amount < int(genesis_dict['staking']['params']['thresholds']['0']):
+            entity_descriptor = cbor.loads(base64.b64decode(
+                existing_entity['untrusted_raw_value']))
+
+            for raw_node_id in entity_descriptor['nodes']:
+                nodes_to_delete.append(
+                    base64.b64encode(raw_node_id).decode('utf-8'))
             print("removing %s" % entity_id)
             continue
         updated_entities.append(existing_entity)
     genesis_dict['registry']['entities'] = updated_entities
+
+    updated_nodes = []
+    for existing_node in genesis_dict['registry']['nodes']:
+        signatures = set(
+            map(lambda a: a['public_key'], existing_node['signatures']))
+        node_ids = signatures.intersection(set(nodes_to_delete))
+        if len(node_ids) > 0:
+            print("removing a nodes %s" % node_ids)
+            continue
+        updated_nodes.append(existing_node)
+    genesis_dict['registry']['nodes'] = updated_nodes
+
+    for node_to_delete in nodes_to_delete:
+        if node_to_delete in genesis_dict['registry']['node_statuses']:
+            del genesis_dict['registry']['node_statuses'][node_to_delete]
 
     # Remove unnecessary staking params
     del genesis_dict['staking']['params']['fee_split_vote']

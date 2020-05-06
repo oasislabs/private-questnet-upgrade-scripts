@@ -9,6 +9,7 @@ verify_ssl = true
 requests = "*"
 slackclient = "*"
 click = "*"
+cbor = "*"
 
 [requires]
 python_version = "3.7"
